@@ -187,6 +187,70 @@ select {
 .status { margin: 0; color: var(--muted); font-size: 13px; min-height: 1.2em; }
 .status.err { color: var(--bad); }
 
+.secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font: 500 13px/1 inherit;
+  cursor: pointer;
+}
+.secondary:hover { border-color: var(--bad); color: var(--bad); }
+.secondary[hidden] { display: none; }
+
+.queuebox { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.queuebox[hidden] { display: none; }
+.queuehead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 8px;
+}
+.queue { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.queue li {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.queue li:first-child { border-top: 0; }
+.queue .qname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.queue .qnote { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.queue li.active .qname { color: var(--ink); }
+.queue li.done .qmark { color: var(--ok); }
+.queue li.done .qnote { color: var(--ok); }
+.queue li.failed .qmark,
+.queue li.failed .qnote { color: var(--bad); }
+.queue li.partial .qmark,
+.queue li.partial .qnote { color: var(--warn); }
+.queue li.active .qmark { color: var(--accent); }
+.queue a { color: var(--accent); }
+
+/* Spinner on the file currently being worked on. */
+@keyframes spin { to { transform: rotate(360deg); } }
+.queue li.active .qmark {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
 .report table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .report th {
   text-align: right;

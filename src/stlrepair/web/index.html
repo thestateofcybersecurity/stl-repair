@@ -17,9 +17,9 @@
   <section class="panel">
     <!-- The input stays in the accessibility tree so the label is keyboard
          reachable; `hidden` would remove it and break tab focus. -->
-    <input type="file" id="file" accept=".stl,model/stl" class="sr-only">
+    <input type="file" id="file" accept=".stl,model/stl" multiple class="sr-only">
     <label id="drop" class="drop" for="file">
-      <strong>Drop an STL anywhere</strong>
+      <strong>Drop STL files anywhere</strong>
       <span>or click to browse</span>
       <small id="fileinfo"></small>
     </label>
@@ -63,7 +63,18 @@
     </details>
 
     <button id="run" class="primary" disabled>Repair</button>
+    <button id="stop" class="secondary" hidden>Stop after this file</button>
     <p id="status" class="status"></p>
+
+    <!-- Batch queue. Files are processed strictly one at a time. -->
+    <div id="queuebox" class="queuebox" hidden>
+      <div class="queuehead">
+        <span id="queuecount"></span>
+        <button type="button" id="clearqueue" class="link">Clear</button>
+      </div>
+      <ol id="queue" class="queue"></ol>
+      <a id="bundle" class="primary as-link" hidden>Download all repaired</a>
+    </div>
 
     <div id="report" class="report" hidden>
       <table>

@@ -89,10 +89,37 @@ listed in `requirements.txt` and the scripts respect an existing `PYTHONPATH`.
 ./scripts/serve
 ```
 
-Opens on <http://127.0.0.1:8765>, bound to loopback. Drag an STL in and you get a
-before/after 3D view with the naked edges highlighted in red, the full report, and
-a download button. The viewer is a vendored copy of three.js, so the page works
-with the network unplugged.
+Opens on <http://127.0.0.1:8765>, bound to loopback. Drop STL files anywhere on
+the page, or click the box to browse. You get a before/after 3D view with the
+naked edges highlighted in red, the full report, and a download button. The
+viewer is a vendored copy of three.js, so the page works with the network
+unplugged.
+
+**Batches.** Drop as many files as you like. They queue and are repaired **one at
+a time**, never in parallel, because each repair is CPU and memory hungry and
+running several together only slows the machine down. The queue shows per-file
+progress and a download link each, plus a single *Download all* zip at the end.
+
+*Stop after this file* halts the run at the next boundary rather than killing it
+mid-repair; the remaining files stay in the queue and the button becomes
+*Repair N remaining* so you can pick up where you left off.
+
+Resource use is deliberately bounded:
+
+- The server repairs one file at a time behind a lock, so several browser tabs
+  cannot gang up on it.
+- Results are spooled to a temporary directory rather than held in RAM, capped
+  by both file count and total bytes, and deleted when the server exits.
+- Above five files the per-file 3D preview is skipped while the batch runs and
+  only the final result is drawn, so a long queue does not spend its time
+  parsing geometry it is about to discard.
+- GPU buffers are explicitly disposed between files. They are not garbage
+  collected with the objects that referenced them, so without this, memory would
+  climb with every model.
+
+**No WebGL?** If the browser cannot create a WebGL context, the 3D preview is
+replaced by a short explanation and everything else keeps working. Repairing a
+mesh does not need a GPU.
 
 ### Command line
 

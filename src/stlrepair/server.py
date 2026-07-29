@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import io
+import shutil
+import tempfile
+import threading
 import uuid
+import zipfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -18,18 +23,43 @@ from .repair import RepairOptions, repair
 
 WEB_ROOT = Path(__file__).parent / "web"
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
-MAX_RESULTS = 8
 MAX_HIGHLIGHT_EDGES = 40_000
 
-# Repaired files live in memory only; the browser fetches them straight back.
-_results: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
+# Results are spooled to disk rather than held in memory: a batch of large
+# models would otherwise pin hundreds of megabytes of RAM for as long as the
+# browser might still ask for them.
+MAX_RESULT_FILES = 500
+MAX_RESULT_BYTES = 2 * 1024 * 1024 * 1024
+
+_SPOOL = Path(tempfile.mkdtemp(prefix="stl-repair-"))
+_results: OrderedDict[str, dict] = OrderedDict()
+_store_lock = threading.Lock()
+
+# One repair at a time. Each one is CPU and memory hungry, so letting several
+# run together on a desktop machine helps nobody; queueing keeps the box
+# usable even if several tabs submit at once.
+_repair_lock = threading.Lock()
+
+
+@atexit.register
+def _cleanup_spool():
+    shutil.rmtree(_SPOOL, ignore_errors=True)
 
 
 def _remember(name: str, payload: bytes) -> str:
     token = uuid.uuid4().hex
-    _results[token] = (name, payload)
-    while len(_results) > MAX_RESULTS:
-        _results.popitem(last=False)
+    path = _SPOOL / f"{token}.stl"
+    path.write_bytes(payload)
+
+    with _store_lock:
+        _results[token] = {"name": name, "path": path, "size": len(payload)}
+        total = sum(entry["size"] for entry in _results.values())
+        while _results and (
+            len(_results) > MAX_RESULT_FILES or total > MAX_RESULT_BYTES
+        ):
+            _, oldest = _results.popitem(last=False)
+            total -= oldest["size"]
+            oldest["path"].unlink(missing_ok=True)
     return token
 
 
@@ -118,7 +148,9 @@ def create_app() -> Flask:
             return jsonify({"error": "file contains no triangles"}), 400
 
         try:
-            result = repair(vertices, faces, options)
+            # Serialised deliberately: see _repair_lock.
+            with _repair_lock:
+                result = repair(vertices, faces, options)
         except Exception as exc:  # noqa: BLE001
             return jsonify({"error": f"repair failed: {exc}"}), 500
 
@@ -139,16 +171,60 @@ def create_app() -> Flask:
 
     @app.get("/api/download/<token>")
     def api_download(token: str):
-        entry = _results.get(token)
-        if entry is None:
+        with _store_lock:
+            entry = _results.get(token)
+        if entry is None or not entry["path"].is_file():
             abort(404)
-        name, payload = entry
         return send_file(
-            io.BytesIO(payload),
+            entry["path"],
             mimetype="model/stl",
             as_attachment=request.args.get("attach") == "1",
-            download_name=name,
+            download_name=entry["name"],
         )
+
+    @app.get("/api/bundle")
+    def api_bundle():
+        """Zip several results together, so a batch is one download."""
+        tokens = [t for t in request.args.get("tokens", "").split(",") if t]
+        if not tokens:
+            return jsonify({"error": "no tokens given"}), 400
+
+        with _store_lock:
+            entries = [_results.get(t) for t in tokens]
+        entries = [e for e in entries if e and e["path"].is_file()]
+        if not entries:
+            return jsonify({"error": "nothing left to bundle"}), 404
+
+        # Written to disk, not memory: a batch of large models zipped in RAM
+        # would undo the point of spooling them in the first place.
+        archive = tempfile.NamedTemporaryFile(
+            suffix=".zip", dir=_SPOOL, delete=False
+        )
+        used: set[str] = set()
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+            for entry in entries:
+                name = entry["name"]
+                stem, suffix = Path(name).stem, Path(name).suffix
+                counter = 2
+                while name in used:  # two inputs can share a filename
+                    name = f"{stem}_{counter}{suffix}"
+                    counter += 1
+                used.add(name)
+                bundle.write(entry["path"], arcname=name)
+        archive.close()
+
+        response = send_file(
+            archive.name,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="repaired_stls.zip",
+        )
+
+        @response.call_on_close
+        def _discard():
+            Path(archive.name).unlink(missing_ok=True)
+
+        return response
 
     return app
 

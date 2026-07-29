@@ -25,8 +25,9 @@ const INFORMATIONAL = new Set(['disjoint_shells']);
 const $ = (id) => document.getElementById(id);
 const loader = new STLLoader();
 
-let currentFile = null;
-let busy = false;
+let queue = [];
+let running = false;
+let stopRequested = false;
 
 // --------------------------------------------------------------------------
 // Viewer: two scenes, one shared camera, so the views can never drift apart.
@@ -137,9 +138,21 @@ function surfaceMaterial() {
   });
 }
 
+/* Buffers live in GPU memory and are not garbage collected with the objects
+   that referenced them. Working through a batch without disposing them grows
+   memory with every file. */
+function disposeGroup(group) {
+  group.traverse((obj) => {
+    obj.geometry?.dispose();
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+    for (const material of materials) material?.dispose();
+  });
+  group.clear();
+}
+
 function setGeometry(view, geometry) {
   if (!view) return;
-  view.group.clear();
+  disposeGroup(view.group);
   view.mesh = null;
   view.edges = null;
   if (!geometry) return;
@@ -156,6 +169,8 @@ function setNakedEdges(view, base64) {
   if (!view) return;
   if (view.edges) {
     view.group.remove(view.edges);
+    view.edges.geometry.dispose();
+    view.edges.material.dispose();
     view.edges = null;
   }
   if (!base64) return;
@@ -275,38 +290,68 @@ function setStatus(message, isError = false) {
   el.classList.toggle('err', isError);
 }
 
-async function loadOriginal(file) {
-  if (!viewerReady) return;   // no preview to update; repair still works
-  const buffer = await file.arrayBuffer();
-  setGeometry(views[0], loader.parse(buffer));
-  setGeometry(views[1], null);
-  setNakedEdges(views[0], '');
-  $('tag-before').textContent = '';
-  $('tag-after').textContent = '';
+/* Above this many files the per-file preview is skipped while the batch runs
+   and only the last result is shown, so a long queue does not spend its time
+   parsing geometry twice per file just to redraw it a moment later. */
+const PREVIEW_LIMIT = 5;
+
+async function showPreview(item) {
+  if (!viewerReady || !item.data) return;
+  const data = item.data;
+
+  const original = await item.file.arrayBuffer();
+  setGeometry(views[0], loader.parse(original));
+  setNakedEdges(views[0], data.naked_edges_b64);
+
+  const repaired = await (await fetch(data.download)).arrayBuffer();
+  setGeometry(views[1], loader.parse(repaired));
+
+  $('tag-before').textContent = `${data.before.triangle_count.toLocaleString()} tris`;
+  $('tag-after').textContent = `${data.after.triangle_count.toLocaleString()} tris`;
   frameAll();
 }
 
-function acceptFile(file) {
-  if (!/\.stl$/i.test(file.name)) {
-    setStatus(`${file.name} is not an STL file.`, true);
-    return;
-  }
-  currentFile = file;
-  $('fileinfo').textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`;
-  $('report').hidden = true;
-  $('run').disabled = false;
-  setStatus('');
-  loadOriginal(file).catch((err) => setStatus(`Could not display: ${err.message}`, true));
+function clearPreview() {
+  if (!viewerReady) return;
+  setGeometry(views[0], null);
+  setGeometry(views[1], null);
+  $('tag-before').textContent = '';
+  $('tag-after').textContent = '';
 }
 
-async function runRepair() {
-  if (!currentFile || busy) return;
-  busy = true;
-  $('run').disabled = true;
-  setStatus('Repairing…');
+function acceptFiles(fileList) {
+  const incoming = Array.from(fileList || []);
+  const stls = incoming.filter((f) => /\.stl$/i.test(f.name));
+  const rejected = incoming.length - stls.length;
 
+  if (!stls.length) {
+    setStatus(
+      incoming.length ? 'None of those are STL files.' : 'No files received.',
+      true,
+    );
+    return;
+  }
+
+  for (const file of stls) {
+    queue.push({ file, name: file.name, size: file.size, status: 'queued', note: '' });
+  }
+
+  $('report').hidden = true;
+  setStatus(rejected ? `Ignored ${rejected} non-STL file${rejected > 1 ? 's' : ''}.` : '');
+  renderQueue();
+  updateRunButton();
+
+  // A single file still gets an immediate preview of the original.
+  if (queue.length === 1 && viewerReady) {
+    stls[0].arrayBuffer()
+      .then((buf) => { setGeometry(views[0], loader.parse(buf)); frameAll(); })
+      .catch((err) => setStatus(`Could not display: ${err.message}`, true));
+  }
+}
+
+async function repairOne(file) {
   const body = new FormData();
-  body.append('file', currentFile);
+  body.append('file', file);
   body.append('mode', $('mode').value);
   body.append('min_shell_fraction', $('min_shell_fraction').value);
   body.append('voxel_resolution', $('voxel_resolution').value);
@@ -314,31 +359,171 @@ async function runRepair() {
     body.append(id, $(id).checked ? '1' : '0');
   }
 
-  try {
-    const response = await fetch('/api/repair', { method: 'POST', body });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || `server returned ${response.status}`);
+  const response = await fetch('/api/repair', { method: 'POST', body });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `server returned ${response.status}`);
+  return data;
+}
 
-    if (viewerReady) {
-      setNakedEdges(views[0], data.naked_edges_b64);
-      const stl = await (await fetch(data.download)).arrayBuffer();
-      setGeometry(views[1], loader.parse(stl));
+/* Strictly one file at a time. Each repair is CPU and memory hungry, so firing
+   the whole queue at once would swamp the machine for no gain: the server
+   serialises them anyway. */
+/** Files still to do: never started, or set aside by a stop. */
+function resumable() {
+  return queue.filter((item) => item.status === 'queued' || item.status === 'skipped');
+}
+
+function updateRunButton() {
+  const left = resumable().length;
+  const button = $('run');
+  button.disabled = running || left === 0;
+  const partial = left > 0 && left < queue.length;
+  button.textContent = partial ? `Repair ${left} remaining` : 'Repair';
+}
+
+async function runBatch() {
+  if (running) return;
+  const pending = resumable();
+  if (!pending.length) return;
+
+  // A stopped batch is picked up where it left off rather than stranded.
+  for (const item of pending) item.status = 'queued';
+
+  running = true;
+  stopRequested = false;
+  $('run').disabled = true;
+  $('stop').hidden = false;
+  $('stop').disabled = false;   // a previous stop must not leave it dead
+  $('bundle').hidden = true;
+
+  const previewEachFile = pending.length <= PREVIEW_LIMIT;
+  if (!previewEachFile) clearPreview();
+
+  let finished = 0;
+  let last = null;
+
+  for (const item of queue) {
+    if (item.status !== 'queued') continue;
+
+    if (stopRequested) {
+      item.status = 'skipped';
+      item.note = 'stopped';
+      renderQueue();
+      continue;
     }
 
-    $('tag-before').textContent = `${data.before.triangle_count.toLocaleString()} tris`;
-    $('tag-after').textContent = `${data.after.triangle_count.toLocaleString()} tris`;
+    item.status = 'active';
+    renderQueue();
+    setStatus(`Repairing ${item.name} — ${finished + 1} of ${pending.length}…`);
 
-    renderReport(data);
-    frameAll();
-    setStatus(data.after.is_clean
-      ? `Repaired via the ${data.tier} tier.`
-      : `Improved via the ${data.tier} tier, but problems remain.`);
-  } catch (err) {
-    setStatus(err.message, true);
-  } finally {
-    busy = false;
-    $('run').disabled = false;
+    try {
+      const data = await repairOne(item.file);
+      item.data = data;
+      item.status = data.after.is_clean ? 'done' : 'partial';
+      item.note = data.after.is_clean
+        ? `${data.tier} · ${Math.round(data.elapsed_ms)} ms`
+        : 'problems remain';
+      last = item;
+
+      renderReport(data);
+      if (previewEachFile) await showPreview(item);
+    } catch (err) {
+      item.status = 'failed';
+      item.note = err.message;
+    }
+
+    finished += 1;
+    renderQueue();
   }
+
+  // For a long queue the preview was skipped; show the final result now.
+  if (!previewEachFile && last) {
+    try { await showPreview(last); } catch { /* preview is optional */ }
+  }
+
+  running = false;
+  $('stop').hidden = true;
+  updateRunButton();
+  summarise();
+}
+
+function summarise() {
+  const count = (status) => queue.filter((item) => item.status === status).length;
+  const ok = count('done');
+  const partial = count('partial');
+  const failed = count('failed');
+  const skipped = count('skipped');
+
+  const parts = [];
+  if (ok) parts.push(`${ok} repaired`);
+  if (partial) parts.push(`${partial} still imperfect`);
+  if (failed) parts.push(`${failed} failed`);
+  if (skipped) parts.push(`${skipped} skipped`);
+  setStatus(parts.length ? parts.join(' · ') : 'Nothing to do.', failed > 0);
+
+  const tokens = queue
+    .filter((item) => item.data)
+    .map((item) => item.data.download.split('/').pop());
+  const bundle = $('bundle');
+  bundle.hidden = tokens.length < 2;
+  bundle.href = `/api/bundle?tokens=${tokens.join(',')}`;
+}
+
+function renderQueue() {
+  const box = $('queuebox');
+  box.hidden = queue.length === 0;
+  if (!queue.length) {
+    $('fileinfo').textContent = '';
+    return;
+  }
+
+  const totalMb = queue.reduce((sum, item) => sum + item.size, 0) / 1024 / 1024;
+  $('fileinfo').textContent =
+    `${queue.length} file${queue.length > 1 ? 's' : ''} · ${totalMb.toFixed(2)} MB`;
+
+  const done = queue.filter((i) => ['done', 'partial', 'failed', 'skipped'].includes(i.status));
+  $('queuecount').textContent = `${done.length} of ${queue.length}`;
+
+  const list = $('queue');
+  list.replaceChildren();
+
+  const marks = { queued: '·', active: '', done: '✓', partial: '!', failed: '✗', skipped: '–' };
+
+  queue.forEach((item) => {
+    const li = document.createElement('li');
+    li.className = item.status;
+
+    const mark = document.createElement('span');
+    mark.className = 'qmark';
+    mark.textContent = marks[item.status] ?? '·';
+
+    const name = document.createElement('span');
+    name.className = 'qname';
+    name.textContent = item.name;
+    name.title = item.name;
+
+    const note = document.createElement('span');
+    note.className = 'qnote';
+
+    if (item.data) {
+      const link = document.createElement('a');
+      link.href = `${item.data.download}?attach=1`;
+      link.download = '';
+      link.textContent = 'download';
+      note.append(link);
+      // Clicking the row brings its report and preview back.
+      name.style.cursor = 'pointer';
+      name.addEventListener('click', () => {
+        renderReport(item.data);
+        showPreview(item).catch(() => {});
+      });
+    } else {
+      note.textContent = item.note || item.status;
+    }
+
+    li.append(mark, name, note);
+    list.append(li);
+  });
 }
 
 // --------------------------------------------------------------------------
@@ -349,9 +534,28 @@ async function runRepair() {
 // needed here. Resetting the value first means re-picking the same file still
 // fires a change event.
 $('file').addEventListener('click', (e) => { e.target.value = ''; });
-$('file').addEventListener('change', (e) => e.target.files[0] && acceptFile(e.target.files[0]));
-$('run').addEventListener('click', runRepair);
+$('file').addEventListener('change', (e) => acceptFiles(e.target.files));
+$('run').addEventListener('click', runBatch);
 $('recentre').addEventListener('click', frameAll);
+
+$('stop').addEventListener('click', () => {
+  // A no-op once the batch has finished, or it would overwrite the summary.
+  if (!running) return;
+  stopRequested = true;
+  $('stop').disabled = true;
+  setStatus('Stopping after the current file…');
+});
+
+$('clearqueue').addEventListener('click', () => {
+  if (running) return;
+  queue = [];
+  clearPreview();
+  $('report').hidden = true;
+  $('bundle').hidden = true;
+  setStatus('');
+  renderQueue();
+  updateRunButton();
+});
 
 $('wireframe').addEventListener('change', (e) => {
   for (const view of views) {
@@ -398,8 +602,8 @@ addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   veil.hidden = true;
-  const file = e.dataTransfer?.files[0];
-  if (file) acceptFile(file);
+  const files = e.dataTransfer?.files;
+  if (files?.length) acceptFiles(files);
 });
 
 // Hoisted, so startViewer can install this as its resize handler above.
