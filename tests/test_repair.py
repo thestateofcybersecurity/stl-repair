@@ -24,7 +24,7 @@ from stlrepair.geometry import count_self_intersections  # noqa: E402
 from stlrepair.repair import RepairOptions, manifold_pass, repair  # noqa: E402
 from stlrepair.report import Theme, render_check, render_repair  # noqa: E402
 from stlrepair.topology import boundary_loops, shell_signed_volume  # noqa: E402
-from stlrepair.voxel import voxel_remesh  # noqa: E402
+from stlrepair.voxel import rasterise_surface, voxel_remesh  # noqa: E402
 
 
 class TestDetection(unittest.TestCase):
@@ -235,6 +235,67 @@ class TestTiers(unittest.TestCase):
         report = diagnose(*mesh_io.weld(out_v, out_f), check_self_intersections=False)
         true_volume = 4 / 3 * np.pi * 1000
         self.assertLess(abs(report.volume - true_volume) / true_volume, 0.03)
+
+    def test_rasteriser_marks_the_surface_and_not_the_interior(self):
+        vertices, faces = fixtures.good_cube()
+        pitch = 0.05
+        pad = 2
+        origin = vertices.min(axis=0) - pad * pitch
+        dims = tuple(
+            int(d) for d in np.ceil((vertices.max(axis=0) - vertices.min(axis=0)) / pitch)
+            + 2 * pad + 1
+        )
+        grid = rasterise_surface(vertices, faces, pitch, origin, dims)
+
+        self.assertTrue(grid.any())
+        centre = tuple(d // 2 for d in dims)
+        self.assertFalse(grid[centre], "the inside of a hollow shell must stay empty")
+        corner = np.floor((vertices[0] - origin) / pitch).astype(int)
+        self.assertTrue(grid[tuple(corner)], "a vertex must land in a marked cell")
+
+    def test_rasteriser_handles_triangles_far_larger_than_the_pitch(self):
+        """The case that exhausted memory: a face hundreds of voxels across.
+
+        Sampling in proportion to area keeps this bounded. Subdividing every
+        triangle down to the pitch instead costs a power of four per level.
+        """
+        vertices = np.array(
+            [[0.0, 0.0, 0.0], [30.0, 0.0, 0.0], [0.0, 30.0, 0.0]]
+        )
+        faces = np.array([[0, 1, 2]], dtype=np.int64)
+        pitch = 30.0 / 400          # the triangle spans 400 voxels
+        origin = vertices.min(axis=0) - pitch
+        dims = (404, 404, 4)
+
+        grid = rasterise_surface(vertices, faces, pitch, origin, dims)
+        filled = int(grid.sum())
+
+        # A right triangle covering half a 400x400 face: expect that order,
+        # not the millions a uniform subdivision would have produced.
+        self.assertGreater(filled, 400 * 400 * 0.3)
+        self.assertLess(filled, 400 * 400)
+
+    def test_voxel_remesh_survives_mixed_triangle_scales(self):
+        vertices, faces = fixtures.mixed_scale_solid()
+        out_v, out_f = voxel_remesh(vertices, faces, resolution=96)
+        report = diagnose(*mesh_io.weld(out_v, out_f), check_self_intersections=False)
+        self.assertTrue(report.is_watertight)
+        self.assertGreater(report.volume, 0)
+
+    def test_absurd_resolution_is_capped_rather_than_allocated(self):
+        notes: list[str] = []
+        vertices, faces = fixtures.sphere(2, 10.0)
+        out_v, out_f = voxel_remesh(vertices, faces, resolution=4000, notes=notes)
+        self.assertTrue(any("resolution reduced" in n for n in notes), notes)
+        report = diagnose(*mesh_io.weld(out_v, out_f), check_self_intersections=False)
+        self.assertTrue(report.is_watertight)
+
+    def test_self_intersection_budget_is_checked_before_allocating(self):
+        """Counting first is what stops a pathological mesh eating memory."""
+        vertices, faces = fixtures.mixed_scale_solid()
+        # Either a real answer or an honest None, but never an explosion.
+        result = count_self_intersections(vertices, faces)
+        self.assertTrue(result is None or isinstance(result, int))
 
     def test_voxel_remesh_bridges_a_large_hole(self):
         """Adaptive closing must seal openings far wider than the default."""

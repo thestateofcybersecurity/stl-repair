@@ -113,6 +113,24 @@ def self_intersecting_pair():
     return v, f
 
 
+def mixed_scale_solid(radius: float = 10.0):
+    """A solid whose triangles differ wildly in size.
+
+    Real exports look like this: a few large flat faces alongside thousands of
+    small ones. Voxelising by subdividing every triangle down to the pitch is
+    ruinous here, because the large faces are hundreds of voxels across.
+    """
+    import trimesh
+
+    coarse = trimesh.creation.box(extents=[radius * 2] * 3)  # 12 huge triangles
+    fine = trimesh.creation.icosphere(subdivisions=3, radius=radius * 0.45)
+    fine.apply_translation([radius * 1.6, 0, 0])
+
+    vertices = np.vstack([coarse.vertices, fine.vertices])
+    faces = np.vstack([coarse.faces, fine.faces + len(coarse.vertices)])
+    return np.asarray(vertices, dtype=np.float64), np.asarray(faces, dtype=np.int64)
+
+
 def sphere(subdivisions: int = 2, radius: float = 1.0):
     """A clean reference solid with many more triangles than a cube."""
     import trimesh

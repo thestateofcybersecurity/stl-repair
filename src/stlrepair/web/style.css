@@ -169,6 +169,7 @@ select {
   font: inherit;
   min-width: 150px;
 }
+.hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; opacity: .85; }
 .check { display: flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
 .check input { accent-color: var(--accent); }
 

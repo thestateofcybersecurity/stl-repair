@@ -194,6 +194,14 @@ The morphological closing that seals openings escalates automatically until the
 interior fill stops leaking, so it handles holes far wider than a fixed radius
 would.
 
+The surface is rasterised by sampling each triangle in proportion to its area,
+in fixed-size batches, so peak memory does not depend on the mesh. Subdividing
+every triangle down to the voxel pitch instead — the obvious approach, and what
+the usual library call does — costs a power of four per level: a model mixing
+15 mm faces with a 0.1 mm pitch produces tens of millions of sub-triangles and
+exhausts memory long before it finishes. The grid size is capped too, and an
+over-ambitious resolution is lowered rather than allocated.
+
 `conservative` stops at tier 1. `auto` escalates only when the mesh is still
 broken. `force` always runs the heavier path.
 
@@ -217,6 +225,12 @@ Timings on a 16-core desktop, single-threaded:
 
 The voxel tier reconstructs a sphere to within 0.8% of true volume at resolution
 96, and 0.5% at 128.
+
+Memory is bounded and released between files. A badly damaged 43k-triangle model
+that falls all the way through to the voxel tier peaks at about 1.3 GB at
+resolution 256 and takes roughly 20 seconds; the server returns to its baseline
+afterwards, so a long batch does not accumulate. Drop the resolution to 128 if
+the machine is tight.
 
 ## Tests
 

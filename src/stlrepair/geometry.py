@@ -58,6 +58,21 @@ def _candidate_pairs(vertices: np.ndarray, faces: np.ndarray):
             idx_b, tree_b = buckets[j], trees[j]
             span = reach[i] + reach[j]
 
+            # Count first, allocate second. Asking for the pairs and checking
+            # the budget afterwards means the array that blows the budget has
+            # already been built, which on a mesh mixing large and small
+            # triangles can be hundreds of megabytes.
+            if i == j:
+                expected = (tree_a.count_neighbors(tree_a, span) - len(idx_a)) // 2
+            else:
+                expected = tree_a.count_neighbors(tree_b, span)
+
+            total += int(expected)
+            if total > MAX_CANDIDATE_PAIRS:
+                return None
+            if expected == 0:
+                continue
+
             if i == j:
                 local = tree_a.query_pairs(span, output_type="ndarray")
                 if not len(local):
@@ -70,10 +85,6 @@ def _candidate_pairs(vertices: np.ndarray, faces: np.ndarray):
                 if not len(sparse):
                     continue
                 found = np.column_stack([idx_a[sparse["i"]], idx_b[sparse["j"]]])
-
-            total += len(found)
-            if total > MAX_CANDIDATE_PAIRS:
-                return None
 
             found = narrow(found)
             if len(found):

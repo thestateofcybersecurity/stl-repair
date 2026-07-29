@@ -9,7 +9,6 @@ conservative and boolean tiers have both failed.
 from __future__ import annotations
 
 import numpy as np
-import trimesh
 from scipy import ndimage
 from skimage import measure
 
@@ -21,6 +20,65 @@ PAD = 4
 # inflates the solid by roughly half a cell. Extracting the isosurface half a
 # cell in puts it back where it belongs.
 SURFACE_OFFSET = -0.5
+
+# Ceiling on the grid, so a request for a fine resolution on a large model
+# cannot quietly ask for tens of gigabytes. Exceeding it lowers the resolution
+# instead of failing.
+MAX_GRID_CELLS = 48_000_000
+
+# Sample points held in memory at once while rasterising. Keeps peak usage flat
+# no matter how large the mesh or how fine the pitch.
+SAMPLE_BUDGET = 2_000_000
+
+
+def _barycentric_lattice(steps: int) -> np.ndarray:
+    """Evenly spaced barycentric coordinates covering a triangle."""
+    i, j = np.meshgrid(np.arange(steps + 1), np.arange(steps + 1), indexing="ij")
+    keep = (i + j) <= steps
+    a, b = i[keep], j[keep]
+    return np.stack([a, b, steps - a - b], axis=1) / float(steps)
+
+
+def rasterise_surface(vertices, faces, pitch, origin, dims):
+    """Mark every voxel the surface passes through.
+
+    Sampling density follows the size of each triangle, so the cost tracks
+    surface area divided by pitch squared. Subdividing each triangle uniformly
+    instead -- as the obvious library call does -- costs a power of four per
+    level, which on a mesh mixing 15 mm triangles with a 0.1 mm pitch means tens
+    of millions of sub-triangles and gigabytes of memory for a grid that only
+    needs a few hundred thousand samples.
+    """
+    grid = np.zeros(dims, dtype=bool)
+    if len(faces) == 0:
+        return grid
+
+    tris = vertices[faces]
+    edges = np.linalg.norm(
+        np.stack(
+            [tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 1], tris[:, 0] - tris[:, 2]],
+            axis=1,
+        ),
+        axis=2,
+    )
+    # Half a pitch between samples guarantees no voxel along the surface is
+    # stepped over.
+    steps = np.maximum(np.ceil(edges.max(axis=1) / (pitch * 0.5)), 1).astype(np.int64)
+    upper = np.asarray(dims, dtype=np.int64) - 1
+
+    for count in np.unique(steps):
+        members = np.flatnonzero(steps == count)
+        lattice = _barycentric_lattice(int(count))
+        per_batch = max(1, SAMPLE_BUDGET // len(lattice))
+
+        for start in range(0, len(members), per_batch):
+            batch = tris[members[start:start + per_batch]]
+            points = np.einsum("kb,mbc->mkc", lattice, batch).reshape(-1, 3)
+            index = np.floor((points - origin) / pitch).astype(np.int64)
+            np.clip(index, 0, upper, out=index)
+            grid[index[:, 0], index[:, 1], index[:, 2]] = True
+
+    return grid
 
 
 def voxel_remesh(
@@ -48,14 +106,25 @@ def voxel_remesh(
     if longest <= 0:
         raise ValueError("mesh has no extent")
 
-    pitch = longest / max(int(resolution), 8)
-
-    surface = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
-    grid = trimesh.voxel.creation.voxelize_subdivide(surface, pitch=pitch, max_iter=12)
-
-    max_close = max(close_gaps, int(resolution) // 6)
+    resolution = max(int(resolution), 8)
+    max_close = max(close_gaps, resolution // 6)
     pad = PAD + max_close
-    shell = np.pad(np.asarray(grid.matrix, dtype=bool), pad, constant_values=False)
+
+    # Settle on a pitch the grid can actually hold. Padding counts towards the
+    # total, so it has to be part of the sum rather than an afterthought.
+    while True:
+        pitch = longest / resolution
+        dims = np.ceil(extent / pitch).astype(np.int64) + 2 * pad + 1
+        if int(np.prod(dims)) <= MAX_GRID_CELLS or resolution <= 16:
+            break
+        resolution = max(16, int(resolution * 0.75))
+        max_close = max(close_gaps, resolution // 6)
+        pad = PAD + max_close
+        if notes is not None:
+            notes.append(f"voxel resolution reduced to {resolution} to bound memory")
+
+    origin = vertices.min(axis=0) - pad * pitch
+    shell = rasterise_surface(vertices, faces, pitch, origin, tuple(int(d) for d in dims))
 
     solid, used, sealed = _fill_interior(shell, close_gaps, max_close)
     if notes is not None:
@@ -69,7 +138,12 @@ def voxel_remesh(
 
     # Signed distance in voxel units: negative inside, positive outside. This
     # is far smoother than a 0/1 field, so the extracted surface is too.
-    sdf = ndimage.distance_transform_edt(~solid) - ndimage.distance_transform_edt(solid)
+    # Each transform returns float64; narrowing straight away and dropping the
+    # intermediates halves what a large grid holds at once.
+    sdf = ndimage.distance_transform_edt(~solid).astype(np.float32)
+    inside = ndimage.distance_transform_edt(solid).astype(np.float32)
+    sdf -= inside
+    del inside, solid
     if smoothing > 0:
         sdf = ndimage.gaussian_filter(sdf, sigma=smoothing)
 
@@ -81,8 +155,7 @@ def voxel_remesh(
         sdf, level=level, spacing=(pitch, pitch, pitch)
     )
 
-    origin = np.asarray(grid.transform)[:3, 3]
-    verts = verts + origin - pad * pitch
+    verts = verts + origin
 
     tris = tris.astype(np.int64)
     if topology.shell_signed_volume(verts, tris) < 0:
