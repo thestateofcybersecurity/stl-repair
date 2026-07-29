@@ -173,6 +173,35 @@ class TestRepair(unittest.TestCase):
         result = repair(*fixtures.overlapping_cubes(), RepairOptions(mode="conservative"))
         self.assertEqual(result.tier, "conservative")
 
+    def test_force_rebuilds_even_when_nothing_is_wrong(self):
+        """Force means the rebuild was asked for, not that it must pay its way.
+
+        Judging the rebuild only on whether it scored better meant an already
+        sound mesh kept the conservative result and reported that tier, which
+        contradicts what the caller selected.
+        """
+        result = repair(*fixtures.good_cube(), RepairOptions(mode="force"))
+        self.assertEqual(result.tier, "manifold")
+        self.assertTrue(result.after.is_clean)
+        self.assertAlmostEqual(result.after.volume, 1.0, places=6)
+
+    def test_force_still_reports_manifold_after_a_repair(self):
+        result = repair(*fixtures.cube_with_hole(), RepairOptions(mode="force"))
+        self.assertEqual(result.tier, "manifold")
+        self.assertAlmostEqual(result.after.volume, 1.0, places=6)
+
+    def test_auto_does_not_rebuild_a_sound_mesh(self):
+        """The counterpart: auto must not do the expensive work for nothing."""
+        result = repair(*fixtures.good_cube(), RepairOptions(mode="auto"))
+        self.assertEqual(result.tier, "conservative")
+
+    def test_force_never_accepts_a_worse_result(self):
+        """Only an equal or better rebuild is taken, even under force."""
+        result = repair(*fixtures.two_disjoint_cubes(), RepairOptions(mode="force"))
+        self.assertTrue(result.after.is_clean)
+        self.assertAlmostEqual(result.after.volume, 2.0, places=6)
+        self.assertEqual(result.after.shell_count, 2)
+
     def test_repair_reports_honest_counts(self):
         result = repair(*fixtures.cube_with_hole(), self.OPTIONS)
         self.assertEqual(result.before.naked_edges, 3)
@@ -308,10 +337,19 @@ class TestReport(unittest.TestCase):
         self.assertIn("REPAIRED", text)
 
     def test_tier_bookkeeping_is_hidden_but_explained(self):
-        """The user gets what the tier did, not our internal accept/reject log."""
+        """The user gets what the tier did, not our internal accept log."""
         text = self.repaired(*fixtures.overlapping_cubes())
         self.assertNotIn("tier accepted", text)
         self.assertIn("rebuilt through the exact boolean kernel", text)
+
+    def test_a_tier_that_was_turned_down_is_still_reported(self):
+        """Hiding it made a heavier mode look like it had done nothing."""
+        result = repair(*fixtures.good_cube(), RepairOptions(mode="force"))
+        result.tier = "conservative"          # as if the rebuild lost
+        result.steps = ["manifold tier ran but did not improve the mesh, "
+                        "so the conservative result was kept"]
+        text = render_repair(result, "m.stl", ["f"], self.PLAIN)
+        self.assertIn("did not improve the mesh", text)
 
     def test_skipped_check_is_never_reported_as_passed(self):
         """A check that could not run must not be counted among the passes."""

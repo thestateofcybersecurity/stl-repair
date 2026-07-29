@@ -268,12 +268,10 @@ class ReportRenderer:
         )
         self.text(TIER_SUMMARY.get(tier, tier), colour=DIM)
 
-        # "<tier> tier accepted" is bookkeeping the header already states. A
-        # failure, though, explains why a heavier tier was needed.
-        actions = [
-            s for s in steps
-            if not s.endswith("tier accepted") and not s.endswith("(no improvement)")
-        ]
+        # "<tier> tier accepted" is bookkeeping the header already states.
+        # Everything else stays: a tier that ran and was turned down, or that
+        # failed, explains why the result came from where it did.
+        actions = [s for s in steps if not s.endswith("tier accepted")]
         if not actions:
             return
         self.blank()

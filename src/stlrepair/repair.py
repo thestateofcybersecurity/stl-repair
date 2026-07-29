@@ -358,11 +358,27 @@ def repair(vertices, faces, options: RepairOptions | None = None) -> RepairResul
                 steps.append(f"{name} tier failed: {exc}")
                 continue
 
-            if _score(candidate) < _score(best):
+            # `force` means the caller asked for the rebuild outright, so an
+            # equally good result is still the one they get; only a worse one
+            # is turned down. Under `auto` the rebuild has to earn its place,
+            # since it is pointless work if the mesh is already sound.
+            improved = _score(candidate) < _score(best)
+            accept = improved or (
+                options.mode == "force" and _score(candidate) <= _score(best)
+            )
+
+            if accept:
                 best_v, best_f, best, tier = cand_v, cand_f, candidate, name
-                steps.append(f"{name} tier accepted")
+                steps.append(
+                    f"{name} tier accepted"
+                    if improved
+                    else f"{name} tier applied as requested (mesh was already sound)"
+                )
             else:
-                steps.append(f"{name} tier rejected (no improvement)")
+                steps.append(
+                    f"{name} tier ran but did not improve the mesh, "
+                    f"so the {tier} result was kept"
+                )
 
             if best.is_clean and options.mode != "force":
                 break
