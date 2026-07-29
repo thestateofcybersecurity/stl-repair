@@ -6,6 +6,14 @@ A self-hosted alternative to the online STL repair services, built around the sa
 eight checks they report, with a web UI, a batch CLI, and a repair pipeline that
 escalates only as far as it has to.
 
+- **Nine checks**, reported worst-first, with passing ones collapsed out of the way
+- **Three repair tiers** that escalate only when needed, so detail survives where
+  it can
+- **Batches** processed one file at a time, with a per-file CSV or JSON report
+- **Honest reporting**: a check that could not run is never shown as a pass, and
+  the tier that produced the output is always named
+- Runs with the network unplugged; needs no GPU
+
 ```
 ━━━ STL REPAIR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Zap.stl
@@ -191,37 +199,71 @@ clean), `incomplete` (improved but problems remain) or `failed`.
 
 ### Options
 
+**What to repair, and how hard to try**
+
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `--mode` | `auto` | `conservative`, `auto`, or `force`. See tiers below. |
-| `--check-only` | off | Report only. Exit code 1 when repair is needed. |
-| `--json` | off | Emit the full report as JSON. |
-| `-v`, `--verbose` | off | List every check, including passes. |
-| `--ascii` | off | Write ASCII STL instead of binary. |
-| `--weld-tol` | 1e-6 of bbox diagonal | Distance below which vertices merge. |
+| `--mode` | `auto` | `conservative`, `auto` or `force`. See tiers below. |
+| `--check-only` | off | Report only, write nothing. Exit code 1 when repair is needed. |
 | `--no-fill-holes` | off | Leave boundaries open. |
-| `--max-hole-edges` | 0 (no limit) | Skip holes larger than this many edges. |
-| `--keep-non-manifold` | off | Do not trim surplus faces from non-manifold edges. |
-| `--min-shell-fraction` | 0 (keep all) | Drop shells below this share of the largest, by surface area. |
-| `--voxel-resolution` | 256 | Voxels across the longest axis in the voxel tier. |
-| `--no-self-check` | off | Skip self-intersection detection. |
+| `--max-hole-edges` | 0 (no limit) | Skip holes with more edges than this. |
+| `--keep-non-manifold` | off | Do not trim surplus faces off non-manifold edges. |
+| `--min-shell-fraction` | 0 (keep all) | Drop shells below this share of the largest, measured by surface area. Use `0.01` to clear scan specks. |
+| `--weld-tol` | 1e-6 of the bbox diagonal | Absolute distance below which vertices merge. |
+| `--no-self-check` | off | Skip self-intersection detection. Faster on dense meshes. |
+| `--voxel-resolution` | 256 | Voxels across the longest axis, voxel tier only. Lower it on a memory-tight machine. |
+| `--voxel-smoothing` | 0.8 | Gaussian blur on the distance field, in voxels. `0` gives a blockier but more faithful surface. |
+
+**Output**
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `-o`, `--output` | `<name>_repaired.stl` beside the input | Output file, or output folder when several inputs are given. |
+| `--ascii` | off | Write ASCII STL instead of binary. |
+| `--report PATH` | none | Write a per-file report. `.json` by extension, CSV otherwise. |
+| `--json` | off | Emit the whole report to stdout as JSON. |
+
+**Presentation**
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `-v`, `--verbose` | off | List every check, including the ones that passed. |
+| `-q`, `--quiet` | off | Suppress the report. Exit codes still apply. |
+| `--plain` | off | ASCII output with no colour, for logs and dumb terminals. |
+| `--color` / `--no-color` | auto | Force colour on or off. Auto-detects a terminal and honours `NO_COLOR`. |
 
 ### As a library
 
 ```python
-from stlrepair import load_stl, weld, diagnose, repair, RepairOptions
+from stlrepair import load_stl, weld, diagnose, repair, save_stl, RepairOptions
 
 vertices, faces = weld(*load_stl("model.stl"))
 print(diagnose(vertices, faces).to_dict())
 
 result = repair(vertices, faces, RepairOptions(mode="auto"))
 print(result.tier, result.after.is_watertight, result.steps)
+save_stl("fixed.stl", result.vertices, result.faces)
+```
+
+`weld` first: STL stores every triangle independently, so an unwelded mesh looks
+like nothing but naked edges. `repair` welds internally, but `diagnose` reports
+what it is given.
+
+For batches, the same reporting the CLI and web UI use:
+
+```python
+from stlrepair.summary import to_csv, totals
+
+entries = [{"file": name, **repair(*load_stl(name)).to_dict()} for name in paths]
+open("report.csv", "w").write(to_csv(entries))
+print(totals(entries)["outcomes"])       # {'repaired': 3, 'unchanged': 1}
 ```
 
 ## How repair works
 
-Three tiers, each re-diagnosed afterwards. **A tier that fails to improve the mesh
-is discarded rather than returned**, so escalating can never make things worse.
+Three tiers, each re-diagnosed afterwards. **A tier whose result is worse than
+what came before is discarded rather than returned**, so escalating can never
+make a file worse.
 
 **1. Conservative** — welds coincident vertices, drops degenerate and duplicate
 faces, trims surplus faces off non-manifold edges, makes winding consistent and
@@ -248,8 +290,25 @@ the usual library call does — costs a power of four per level: a model mixing
 exhausts memory long before it finishes. The grid size is capped too, and an
 over-ambitious resolution is lowered rather than allocated.
 
-`conservative` stops at tier 1. `auto` escalates only when the mesh is still
-broken. `force` always runs the heavier path.
+### Choosing a mode
+
+`conservative` stops at tier 1 and never resamples anything.
+
+`auto` escalates only when the mesh is still broken, and a heavier tier has to
+earn its place: if it comes back no better than the conservative result, the
+conservative result is kept. Rebuilding a mesh that is already sound is pointless
+work, so on a healthy file `auto` reports `conservative` and stops.
+
+`force` runs the boolean rebuild regardless. Because the rebuild was asked for
+explicitly, an equally good result is accepted rather than discarded — otherwise
+selecting `force` on an already sound mesh would silently report `conservative`
+and contradict the request. A *worse* result is still turned down. The voxel tier
+stays a fallback in every mode, used only when the boolean kernel rejects the
+mesh outright.
+
+Whichever tier produced the output is named in the report, along with any tier
+that ran and was turned down, so the result is never attributed to work that did
+not happen.
 
 ### Which triangles get trimmed
 
@@ -260,14 +319,20 @@ arbitrarily deletes real geometry.
 
 ## Accuracy and performance
 
-Timings on a 16-core desktop, single-threaded:
+Timings on a 16-core desktop, single-threaded, on real print files:
 
-| Triangles | Diagnose | Full repair |
-| --- | --- | --- |
-| 14.5k | 42 ms | 957 ms |
-| 20k | 100 ms | 337 ms |
-| 82k | 414 ms | 1.5 s |
-| 327k | 1.8 s | 7.0 s |
+| Triangles | Tier reached | Diagnose | Full repair |
+| --- | --- | --- | --- |
+| 14.5k | conservative | 42 ms | 1.0 s |
+| 20k | conservative | 100 ms | 337 ms |
+| 82k | conservative | 414 ms | 1.5 s |
+| 327k | conservative | 1.8 s | 7.0 s |
+| 43.7k | voxel | 218 ms | 22 s |
+
+The last row is the shape of the cost worth knowing: work scales with how damaged
+a file is, not with how big it is. A 43k-triangle model with 5,027 non-manifold
+edges falls through to the voxel tier and takes twenty times longer than a clean
+327k-triangle one.
 
 The voxel tier reconstructs a sphere to within 0.8% of true volume at resolution
 96, and 0.5% at 128.
@@ -284,20 +349,48 @@ the machine is tight.
 ./scripts/test
 ```
 
-57 tests. Every check has a fixture that triggers it and nothing else, every
-repair path is verified by geometry rather than by exit code (a repaired cube must
-have volume exactly 1.0), and the report is tested for ordering, for collapsing,
-and for the property that colour changes no character positions.
+77 tests, no external test dependencies. Every check has a fixture that triggers
+it and nothing else. Repairs are verified by geometry rather than by exit code: a
+repaired cube must have volume exactly 1.0, and the union of two unit cubes offset
+by half must be 1.875. The report is tested for severity ordering, for collapsing
+passed checks, and for the property that colour changes no character positions.
+Several tests exist only to pin bugs that already happened once — a stray fin
+must be trimmed instead of a real face, a skipped check must never be reported as
+a pass, a triangle 400 voxels across must not exhaust memory, and `force` must not
+silently report `conservative`.
+
+The browser UI is not covered by the suite; it is verified by hand.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success. With `--check-only`, every file was clean. |
+| 1 | With `--check-only`, at least one file needs repair. Otherwise at least one file failed. |
+| 2 | No STL files found at the given paths. |
+
+So `--check-only` doubles as a gate:
+
+```bash
+./scripts/stl-repair ~/printer-files --check-only -q || echo "some files need repair"
+```
 
 ## Limitations
 
 - Self-intersection detection skips coplanar overlaps. Adjacent flat surfaces
   produce them constantly and they are not what breaks a slicer.
 - On very dense or pathological meshes the self-intersection search gives up
-  rather than run for minutes. It says so instead of claiming a pass.
-- The voxel tier resamples. It is a last resort, not a default, and the report
+  rather than run for minutes. It reports `not checked` instead of claiming a
+  pass, and the batch report names which files were affected.
+- The voxel tier resamples, and its output is far denser than its input: a 43k
+  triangle model can come back as 338k. That is inherent to marching cubes at a
+  fine pitch. Lower `--voxel-resolution` to trade detail for size. The report
   always states which tier produced the output.
+- Repair is single-threaded, and deliberately serialised across a batch. It is
+  optimised for not disturbing the machine rather than for throughput.
 - STL only. No 3MF, OBJ or STEP.
+- Nothing here validates that a repaired model is *correct*, only that it is
+  topologically sound. Check anything dimensionally critical in your slicer.
 
 ## Licence
 
