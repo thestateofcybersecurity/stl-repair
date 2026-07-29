@@ -50,6 +50,20 @@ main {
   gap: 14px;
 }
 
+/* Visually hidden but still focusable, so the label stays keyboard reachable. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The whole box is the control, not just a link inside it. */
 .drop {
   border: 1.5px dashed var(--line);
   border-radius: 8px;
@@ -57,11 +71,35 @@ main {
   text-align: center;
   display: grid;
   gap: 4px;
+  cursor: pointer;
   transition: border-color .15s, background .15s;
 }
+.drop:hover { border-color: var(--accent); background: #4da3ff0d; }
 .drop.hot { border-color: var(--accent); background: #4da3ff14; }
 .drop small { color: var(--muted); font-variant-numeric: tabular-nums; }
-.drop span { color: var(--muted); font-size: 13px; }
+.drop span { color: var(--accent); font-size: 13px; }
+
+/* Focus ring driven by the hidden input, so tabbing to it is visible. */
+#file:focus-visible + .drop {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.veil {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: #0b0e13d9;
+  border: 3px dashed var(--accent);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+.veil[hidden] { display: none; }
 
 .link {
   background: none;

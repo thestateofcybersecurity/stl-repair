@@ -23,12 +23,14 @@
 
 <main>
   <section class="panel">
-    <div id="drop" class="drop">
-      <input type="file" id="file" accept=".stl,model/stl" hidden>
-      <strong>Drop an STL here</strong>
-      <span>or <button type="button" id="browse" class="link">choose a file</button></span>
+    <!-- The input stays in the accessibility tree so the label is keyboard
+         reachable; `hidden` would remove it and break tab focus. -->
+    <input type="file" id="file" accept=".stl,model/stl" class="sr-only">
+    <label id="drop" class="drop" for="file">
+      <strong>Drop an STL anywhere</strong>
+      <span>or click to browse</span>
       <small id="fileinfo"></small>
-    </div>
+    </label>
 
     <details class="options" open>
       <summary>Repair options</summary>
@@ -99,6 +101,10 @@
     </div>
   </section>
 </main>
+
+<!-- Shown while a file is dragged over the window, so it is obvious the whole
+     page accepts the drop rather than just the box in the corner. -->
+<div id="veil" class="veil" hidden><span>Release to load the STL</span></div>
 
 <script type="module" src="app.js"></script>
 </body>

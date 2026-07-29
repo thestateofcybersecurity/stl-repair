@@ -236,6 +236,10 @@ async function loadOriginal(file) {
 }
 
 function acceptFile(file) {
+  if (!/\.stl$/i.test(file.name)) {
+    setStatus(`${file.name} is not an STL file.`, true);
+    return;
+  }
   currentFile = file;
   $('fileinfo').textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`;
   $('report').hidden = true;
@@ -289,7 +293,10 @@ async function runRepair() {
 // Wiring
 // --------------------------------------------------------------------------
 
-$('browse').addEventListener('click', () => $('file').click());
+// The label element handles opening the picker natively, so no click wiring is
+// needed here. Resetting the value first means re-picking the same file still
+// fires a change event.
+$('file').addEventListener('click', (e) => { e.target.value = ''; });
 $('file').addEventListener('change', (e) => e.target.files[0] && acceptFile(e.target.files[0]));
 $('run').addEventListener('click', runRepair);
 $('recentre').addEventListener('click', frameAll);
@@ -306,20 +313,42 @@ $('highlight').addEventListener('change', (e) => {
   }
 });
 
-const drop = $('drop');
-for (const type of ['dragenter', 'dragover']) {
-  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.add('hot'); });
-}
-for (const type of ['dragleave', 'drop']) {
-  drop.addEventListener(type, (e) => { e.preventDefault(); drop.classList.remove('hot'); });
-}
-drop.addEventListener('drop', (e) => {
-  const file = e.dataTransfer.files[0];
+/* The entire window accepts the drop. A small target in the corner meant most
+   drops landed on the page, got swallowed by the navigation guard, and looked
+   like nothing had happened. */
+const veil = $('veil');
+let dragDepth = 0;
+
+const draggingFiles = (e) =>
+  Array.from(e.dataTransfer?.types || []).includes('Files');
+
+addEventListener('dragenter', (e) => {
+  if (!draggingFiles(e)) return;
+  e.preventDefault();
+  // dragenter fires again for every child element, so nesting is counted
+  // rather than toggled, otherwise the veil flickers as the cursor moves.
+  dragDepth += 1;
+  veil.hidden = false;
+});
+
+addEventListener('dragover', (e) => {
+  if (draggingFiles(e)) e.preventDefault();
+});
+
+addEventListener('dragleave', (e) => {
+  if (!draggingFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) veil.hidden = true;
+});
+
+addEventListener('drop', (e) => {
+  // Always prevent the default, or a stray drop navigates away from the app.
+  e.preventDefault();
+  dragDepth = 0;
+  veil.hidden = true;
+  const file = e.dataTransfer?.files[0];
   if (file) acceptFile(file);
 });
-// Stop a stray drop elsewhere on the page from navigating away from the app.
-addEventListener('dragover', (e) => e.preventDefault());
-addEventListener('drop', (e) => e.preventDefault());
 
 function redraw() {
   syncSize();
