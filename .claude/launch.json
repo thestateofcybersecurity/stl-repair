@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "stl-repair",
+      "runtimeExecutable": "scripts/serve",
+      "runtimeArgs": [],
+      "port": 8765
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STL Repair</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/"
+  }
+}
+</script>
+</head>
+<body>
+
+<header class="bar">
+  <h1>STL Repair</h1>
+  <p class="sub">Runs entirely on this machine. Nothing is uploaded anywhere.</p>
+</header>
+
+<main>
+  <section class="panel">
+    <div id="drop" class="drop">
+      <input type="file" id="file" accept=".stl,model/stl" hidden>
+      <strong>Drop an STL here</strong>
+      <span>or <button type="button" id="browse" class="link">choose a file</button></span>
+      <small id="fileinfo"></small>
+    </div>
+
+    <details class="options" open>
+      <summary>Repair options</summary>
+
+      <label class="row">
+        <span>Mode</span>
+        <select id="mode">
+          <option value="auto" selected>Auto (escalate as needed)</option>
+          <option value="conservative">Conservative (never resample)</option>
+          <option value="force">Force solid (always rebuild)</option>
+        </select>
+      </label>
+
+      <label class="check"><input type="checkbox" id="fill_holes" checked> Fill holes</label>
+      <label class="check"><input type="checkbox" id="resolve_non_manifold" checked> Trim non-manifold edges</label>
+      <label class="check"><input type="checkbox" id="check_self_intersections" checked> Check self-intersections</label>
+      <label class="check"><input type="checkbox" id="ascii"> Write ASCII STL</label>
+
+      <label class="row">
+        <span>Drop shells under</span>
+        <select id="min_shell_fraction">
+          <option value="0" selected>keep all</option>
+          <option value="0.001">0.1% of largest</option>
+          <option value="0.01">1% of largest</option>
+          <option value="0.05">5% of largest</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span>Voxel resolution</span>
+        <select id="voxel_resolution">
+          <option value="128">128 (fast)</option>
+          <option value="256" selected>256</option>
+          <option value="384">384</option>
+          <option value="512">512 (slow, detailed)</option>
+        </select>
+      </label>
+    </details>
+
+    <button id="run" class="primary" disabled>Repair</button>
+    <p id="status" class="status"></p>
+
+    <div id="report" class="report" hidden>
+      <table>
+        <thead><tr><th>Check</th><th>Before</th><th>After</th></tr></thead>
+        <tbody id="checks"></tbody>
+      </table>
+      <dl id="summary" class="summary"></dl>
+      <ul id="steps" class="steps"></ul>
+      <a id="download" class="primary as-link" download>Download repaired STL</a>
+    </div>
+  </section>
+
+  <section class="viewer">
+    <div class="viewport">
+      <div class="tag">Original <em id="tag-before"></em></div>
+      <canvas id="canvas-before"></canvas>
+    </div>
+    <div class="viewport">
+      <div class="tag">Repaired <em id="tag-after"></em></div>
+      <canvas id="canvas-after"></canvas>
+    </div>
+    <div id="overlay" class="overlay"></div>
+    <div class="viewtools">
+      <label class="check"><input type="checkbox" id="wireframe"> Wireframe</label>
+      <label class="check"><input type="checkbox" id="highlight" checked> Highlight naked edges</label>
+      <button type="button" id="recentre" class="link">Recentre</button>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Bundled dependencies, restored by scripts/setup
+pylibs/
+
+__pycache__/
+*.pyc
+*_repaired.stl

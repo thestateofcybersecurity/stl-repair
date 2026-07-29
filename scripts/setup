@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Installs the Python dependencies into ./pylibs.
+#
+# A --target install is used rather than a virtualenv because this machine has
+# no python3-venv (ensurepip is missing) and Ubuntu marks the system Python as
+# externally managed. Nothing outside this folder is touched.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 -m pip install --target="$ROOT/pylibs" --upgrade -r "$ROOT/requirements.txt"
+echo "Dependencies installed into $ROOT/pylibs"

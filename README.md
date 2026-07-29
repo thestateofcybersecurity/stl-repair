@@ -1,0 +1,218 @@
+# stl-repair
+
+Diagnose and repair STL files locally. No uploads, no account, no network.
+
+A self-hosted alternative to the online STL repair services, built around the same
+eight checks they report, with a web UI, a batch CLI, and a repair pipeline that
+escalates only as far as it has to.
+
+```
+━━━ STL REPAIR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Zap.stl
+  709.7 KB · binary STL · 14,532 triangles · 2 bodies
+
+  PROBLEMS FOUND                                                before → after
+    ✓ Non-manifold edges                                          20 →       0
+    ✓ Degenerate faces                                            20 →       0
+    ✓ Duplicate faces                                              1 →       0
+
+  WORTH KNOWING
+    ● Disjoint shells                                              1 →       1
+
+  ✓ 5 other checks passed
+    self-intersections · naked edges · non-planar holes · planar holes
+    inverted normals
+
+  REPAIR                                            conservative tier · 957 ms
+    cleaned and closed in place, no geometry resampled
+
+    · removed 20 degenerate faces
+
+  RESULT
+      Triangles                                       14,532 →  14,512     -20
+      Vertices                                         7,260 →   7,260      +0
+      Watertight                                                           yes
+      Volume                                                         2,386.937
+      Separate bodies                                                        2
+
+  ✓  REPAIRED   watertight and ready to print
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+## What it checks
+
+| Check | What it means |
+| --- | --- |
+| Naked edges | Edges with only one triangle. The surface is open here. |
+| Planar holes | Boundary loops that lie flat, the easy kind to cap. |
+| Non-planar holes | Boundary loops that twist out of plane, needing a fitted patch. |
+| Non-manifold edges | Edges shared by three or more triangles. Slicers choke on these. |
+| Inverted normals | Triangles wound the wrong way, or a whole shell turned inside out. |
+| Duplicate faces | The same triangle stored more than once, including back-to-back pairs. |
+| Degenerate faces | Zero-area triangles and needle slivers. |
+| Disjoint shells | Separate bodies in one file. Reported, never treated as damage. |
+| Self-intersections | Triangles that pass through each other. |
+
+Problems are listed worst-first, not in a fixed order, so the thing most likely to
+break a print is the first thing on screen. Checks that pass collapse into one
+line; `-v` expands them.
+
+Two deliberate choices about honesty:
+
+- **Disjoint shells are not damage.** A model can legitimately be several bodies,
+  so the count is reported under "worth knowing" and never blocks a clean verdict.
+  Use `--min-shell-fraction` if you actually want specks discarded.
+- **A skipped check is never reported as passed.** The self-intersection search
+  gives up on pathological meshes rather than grinding for minutes. When it does,
+  it says `not checked` and the verdict admits it.
+
+## Install
+
+Needs Python 3.10+.
+
+```bash
+git clone https://github.com/thestateofcybersecurity/stl-repair.git
+cd stl-repair
+./scripts/setup
+```
+
+`scripts/setup` installs the dependencies into a local `pylibs/` folder with
+`pip install --target`. Nothing outside the project directory is touched and no
+`sudo` is required. If you would rather use a virtualenv, the dependencies are
+listed in `requirements.txt` and the scripts respect an existing `PYTHONPATH`.
+
+## Use
+
+### Web UI
+
+```bash
+./scripts/serve
+```
+
+Opens on <http://127.0.0.1:8765>, bound to loopback. Drag an STL in and you get a
+before/after 3D view with the naked edges highlighted in red, the full report, and
+a download button. The viewer is a vendored copy of three.js, so the page works
+with the network unplugged.
+
+### Command line
+
+```bash
+./scripts/stl-repair model.stl
+```
+
+Writes `model_repaired.stl` beside the input.
+
+```bash
+# report without writing anything; exits 1 if repair is needed
+./scripts/stl-repair model.stl --check-only
+
+# whole folder into an output directory
+./scripts/stl-repair ~/printer-files -o ./repaired
+
+# machine-readable, for scripting
+./scripts/stl-repair model.stl --check-only --json
+```
+
+Colour switches itself off when piped and honours `NO_COLOR`. `--plain` gives
+ASCII output for logs, `--color` forces colour back on.
+
+### Options
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--mode` | `auto` | `conservative`, `auto`, or `force`. See tiers below. |
+| `--check-only` | off | Report only. Exit code 1 when repair is needed. |
+| `--json` | off | Emit the full report as JSON. |
+| `-v`, `--verbose` | off | List every check, including passes. |
+| `--ascii` | off | Write ASCII STL instead of binary. |
+| `--weld-tol` | 1e-6 of bbox diagonal | Distance below which vertices merge. |
+| `--no-fill-holes` | off | Leave boundaries open. |
+| `--max-hole-edges` | 0 (no limit) | Skip holes larger than this many edges. |
+| `--keep-non-manifold` | off | Do not trim surplus faces from non-manifold edges. |
+| `--min-shell-fraction` | 0 (keep all) | Drop shells below this share of the largest, by surface area. |
+| `--voxel-resolution` | 256 | Voxels across the longest axis in the voxel tier. |
+| `--no-self-check` | off | Skip self-intersection detection. |
+
+### As a library
+
+```python
+from stlrepair import load_stl, weld, diagnose, repair, RepairOptions
+
+vertices, faces = weld(*load_stl("model.stl"))
+print(diagnose(vertices, faces).to_dict())
+
+result = repair(vertices, faces, RepairOptions(mode="auto"))
+print(result.tier, result.after.is_watertight, result.steps)
+```
+
+## How repair works
+
+Three tiers, each re-diagnosed afterwards. **A tier that fails to improve the mesh
+is discarded rather than returned**, so escalating can never make things worse.
+
+**1. Conservative** — welds coincident vertices, drops degenerate and duplicate
+faces, trims surplus faces off non-manifold edges, makes winding consistent and
+turns inside-out shells the right way, then caps holes by ear-clipping a fitted
+plane. Never resamples geometry. Most files stop here.
+
+**2. Manifold** — rebuilds through [manifold3d](https://github.com/elalish/manifold)'s
+exact boolean kernel. This is what fuses overlapping bodies and resolves
+self-intersections, because every output of that kernel is intersection-free by
+construction.
+
+**3. Voxel** — re-derives the surface from a filled voxel volume: rasterise, flood
+fill from outside, extract the isosurface from a signed distance field. Always
+produces a watertight solid, at the cost of resampling detail at the voxel size.
+The morphological closing that seals openings escalates automatically until the
+interior fill stops leaking, so it handles holes far wider than a fixed radius
+would.
+
+`conservative` stops at tier 1. `auto` escalates only when the mesh is still
+broken. `force` always runs the heavier path.
+
+### Which triangles get trimmed
+
+When an edge carries more than two faces, the surplus has to go, and *which* two
+survive matters. Candidates are ranked by how many clean two-face edges they
+already have, so well-attached surface wins and loose fins lose. Picking
+arbitrarily deletes real geometry.
+
+## Accuracy and performance
+
+Timings on a 16-core desktop, single-threaded:
+
+| Triangles | Diagnose | Full repair |
+| --- | --- | --- |
+| 14.5k | 42 ms | 957 ms |
+| 20k | 100 ms | 337 ms |
+| 82k | 414 ms | 1.5 s |
+| 327k | 1.8 s | 7.0 s |
+
+The voxel tier reconstructs a sphere to within 0.8% of true volume at resolution
+96, and 0.5% at 128.
+
+## Tests
+
+```bash
+./scripts/test
+```
+
+57 tests. Every check has a fixture that triggers it and nothing else, every
+repair path is verified by geometry rather than by exit code (a repaired cube must
+have volume exactly 1.0), and the report is tested for ordering, for collapsing,
+and for the property that colour changes no character positions.
+
+## Limitations
+
+- Self-intersection detection skips coplanar overlaps. Adjacent flat surfaces
+  produce them constantly and they are not what breaks a slicer.
+- On very dense or pathological meshes the self-intersection search gives up
+  rather than run for minutes. It says so instead of claiming a pass.
+- The voxel tier resamples. It is a last resort, not a default, and the report
+  always states which tier produced the output.
+- STL only. No 3MF, OBJ or STEP.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). Vendored three.js under `src/stlrepair/web/vendor/`
+is MIT, copyright the three.js authors.
