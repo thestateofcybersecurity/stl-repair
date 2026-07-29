@@ -32,10 +32,16 @@ let busy = false;
 // Viewer: two scenes, one shared camera, so the views can never drift apart.
 // --------------------------------------------------------------------------
 
-const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
-camera.position.set(0, 0, 5);
+/* The 3D preview is a convenience, not the product. WebGL can be unavailable
+   for reasons that have nothing to do with this app -- hardware acceleration
+   switched off, a locked-down or sandboxed browser, a remote session, a VM
+   without a GPU. Repairing a mesh needs none of it, so a failure here disables
+   the preview and leaves diagnosis, repair and download working. */
+let camera = null;
+let controls = null;
+let views = [];
 
-const views = ['before', 'after'].map((key) => {
+function buildView(key) {
   const canvas = $(`canvas-${key}`);
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -50,13 +56,50 @@ const views = ['before', 'after'].map((key) => {
   key2.position.set(-1.2, -0.6, -0.9);
   scene.add(key1, key2);
 
-  return { key, canvas, renderer, scene, mesh: null, edges: null, group: new THREE.Group() };
-});
-views.forEach((v) => v.scene.add(v.group));
+  const group = new THREE.Group();
+  scene.add(group);
+  return { key, canvas, renderer, scene, mesh: null, edges: null, group };
+}
 
-const controls = new OrbitControls(camera, $('overlay'));
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+function startViewer() {
+  try {
+    camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
+    camera.position.set(0, 0, 5);
+
+    views = ['before', 'after'].map(buildView);
+
+    controls = new OrbitControls(camera, $('overlay'));
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+
+    const sizeObserver = new ResizeObserver(redraw);
+    for (const view of views) sizeObserver.observe(view.canvas.parentElement);
+    addEventListener('resize', redraw);
+
+    syncSize();
+    tick();
+    return true;
+  } catch (err) {
+    views = [];
+    camera = null;
+    controls = null;
+    showViewerUnavailable(err);
+    return false;
+  }
+}
+
+function showViewerUnavailable(err) {
+  const viewer = document.querySelector('.viewer');
+  if (viewer) viewer.classList.add('no-webgl');
+
+  const box = $('nowebgl');
+  if (box) {
+    box.hidden = false;
+    box.querySelector('[data-reason]').textContent = String(err && err.message || err);
+  }
+}
+
+const viewerReady = startViewer();
 
 /* The viewports are grid items, so they resize when the panel or the window
    does and a window resize event covers only one of those. A ResizeObserver
@@ -76,6 +119,7 @@ function syncSize() {
 }
 
 function tick() {
+  if (!views.length) return;
   requestAnimationFrame(tick);
   syncSize();
   controls.update();
@@ -94,6 +138,7 @@ function surfaceMaterial() {
 }
 
 function setGeometry(view, geometry) {
+  if (!view) return;
   view.group.clear();
   view.mesh = null;
   view.edges = null;
@@ -108,6 +153,7 @@ function setGeometry(view, geometry) {
 
 /** Draw the boundary edges the server found, so holes are visible at a glance. */
 function setNakedEdges(view, base64) {
+  if (!view) return;
   if (view.edges) {
     view.group.remove(view.edges);
     view.edges = null;
@@ -130,6 +176,7 @@ function setNakedEdges(view, base64) {
 
 /** Frame whichever model we have, and centre both groups on the same origin. */
 function frameAll() {
+  if (!views.length) return;
   const box = new THREE.Box3();
   let found = false;
   for (const view of views) {
@@ -229,6 +276,7 @@ function setStatus(message, isError = false) {
 }
 
 async function loadOriginal(file) {
+  if (!viewerReady) return;   // no preview to update; repair still works
   const buffer = await file.arrayBuffer();
   setGeometry(views[0], loader.parse(buffer));
   setGeometry(views[1], null);
@@ -271,10 +319,11 @@ async function runRepair() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `server returned ${response.status}`);
 
-    setNakedEdges(views[0], data.naked_edges_b64);
-
-    const stl = await (await fetch(data.download)).arrayBuffer();
-    setGeometry(views[1], loader.parse(stl));
+    if (viewerReady) {
+      setNakedEdges(views[0], data.naked_edges_b64);
+      const stl = await (await fetch(data.download)).arrayBuffer();
+      setGeometry(views[1], loader.parse(stl));
+    }
 
     $('tag-before').textContent = `${data.before.triangle_count.toLocaleString()} tris`;
     $('tag-after').textContent = `${data.after.triangle_count.toLocaleString()} tris`;
@@ -353,17 +402,12 @@ addEventListener('drop', (e) => {
   if (file) acceptFile(file);
 });
 
+// Hoisted, so startViewer can install this as its resize handler above.
 function redraw() {
+  if (!views.length) return;
   syncSize();
   for (const view of views) view.renderer.render(view.scene, camera);
 }
-
-const sizeObserver = new ResizeObserver(redraw);
-for (const view of views) sizeObserver.observe(view.canvas.parentElement);
-addEventListener('resize', redraw);
-
-syncSize();
-tick();
 
 // Tells the boot watchdog in index.html that wiring completed. If anything
 // above throws, this never runs and the page says so rather than going quiet.

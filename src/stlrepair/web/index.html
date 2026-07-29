@@ -86,6 +86,21 @@
       <canvas id="canvas-after"></canvas>
     </div>
     <div id="overlay" class="overlay"></div>
+
+    <!-- Shown instead of the two viewports when WebGL is unavailable. Repair
+         does not need a GPU, so only the preview is lost. -->
+    <div id="nowebgl" class="nowebgl" hidden>
+      <strong>3D preview unavailable</strong>
+      <p>This browser could not create a WebGL context, so the before/after
+         view is switched off. <em>Diagnosis, repair and download all still
+         work normally.</em></p>
+      <p class="hint">Usually this means hardware acceleration is disabled. In
+         Chrome, check <code>Settings → System → Use graphics acceleration when
+         available</code>, then restart the browser. <code>chrome://gpu</code>
+         shows the details.</p>
+      <p class="reason">Reported reason: <span data-reason></span></p>
+    </div>
+
     <div class="viewtools">
       <label class="check"><input type="checkbox" id="wireframe"> Wireframe</label>
       <label class="check"><input type="checkbox" id="highlight" checked> Highlight naked edges</label>

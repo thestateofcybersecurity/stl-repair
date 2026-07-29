@@ -115,6 +115,35 @@ main {
 }
 .bootfail[hidden] { display: none; }
 
+/* No WebGL: hide the dead canvases and the controls that drive them. */
+.viewer.no-webgl .viewport,
+.viewer.no-webgl .viewtools,
+.viewer.no-webgl .overlay { display: none; }
+
+.nowebgl {
+  grid-column: 1 / -1;
+  align-self: center;
+  justify-self: center;
+  max-width: 460px;
+  padding: 24px 26px;
+  margin: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.nowebgl[hidden] { display: none; }
+.nowebgl strong { display: block; margin-bottom: 8px; color: var(--warn); }
+.nowebgl p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.nowebgl em { color: var(--ink); font-style: normal; }
+.nowebgl code {
+  background: #0d1015;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+.nowebgl .reason { font-size: 11px; opacity: .6; margin: 0; }
+
 .link {
   background: none;
   border: 0;
