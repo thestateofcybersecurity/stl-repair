@@ -101,6 +101,20 @@ main {
 }
 .veil[hidden] { display: none; }
 
+.bootfail {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  padding: 12px 18px;
+  background: #4a1116;
+  border-top: 2px solid var(--bad);
+  color: #ffd7d7;
+  font-size: 13px;
+}
+.bootfail[hidden] { display: none; }
+
 .link {
   background: none;
   border: 0;

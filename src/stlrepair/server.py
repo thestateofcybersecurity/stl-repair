@@ -78,16 +78,26 @@ def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
+    def _fresh(response):
+        """Never let the browser reuse a stale asset.
+
+        This runs on localhost where there is nothing to save by caching, and a
+        half-updated page (new markup against an old script) fails in ways that
+        look like the app is broken rather than out of date.
+        """
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
     @app.get("/")
     def index():
-        return send_from_directory(WEB_ROOT, "index.html")
+        return _fresh(send_from_directory(WEB_ROOT, "index.html"))
 
     @app.get("/<path:filename>")
     def assets(filename: str):
         target = (WEB_ROOT / filename).resolve()
         if not target.is_file() or WEB_ROOT.resolve() not in target.parents:
             abort(404)
-        return send_from_directory(WEB_ROOT, filename)
+        return _fresh(send_from_directory(WEB_ROOT, filename))
 
     @app.post("/api/repair")
     def api_repair():

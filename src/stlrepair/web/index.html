@@ -5,14 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>STL Repair</title>
 <link rel="stylesheet" href="style.css">
-<script type="importmap">
-{
-  "imports": {
-    "three": "./vendor/three.module.js",
-    "three/addons/": "./vendor/"
-  }
-}
-</script>
 </head>
 <body>
 
@@ -105,6 +97,32 @@
 <!-- Shown while a file is dragged over the window, so it is obvious the whole
      page accepts the drop rather than just the box in the corner. -->
 <div id="veil" class="veil" hidden><span>Release to load the STL</span></div>
+
+<div id="bootfail" class="bootfail" hidden></div>
+
+<!-- A classic script, so it runs even when the module graph fails to load.
+     Without this a boot failure leaves a page that looks fine but does
+     nothing when you click or drop, with the reason only in the console. -->
+<script>
+  window.addEventListener('error', (e) => {
+    const box = document.getElementById('bootfail');
+    if (!box) return;
+    box.hidden = false;
+    box.textContent = 'The interface failed to load: ' +
+      (e.message || 'script error') +
+      '. Check the browser console, and confirm this browser supports ES modules.';
+  });
+
+  setTimeout(() => {
+    if (window.__stlrepairReady) return;
+    const box = document.getElementById('bootfail');
+    if (!box || !box.hidden) return;
+    box.hidden = false;
+    box.textContent = 'The interface did not finish loading, so nothing on this '
+      + 'page will respond. Try a hard reload (Ctrl+Shift+R). If it persists, '
+      + 'the browser console will say why.';
+  }, 3000);
+</script>
 
 <script type="module" src="app.js"></script>
 </body>

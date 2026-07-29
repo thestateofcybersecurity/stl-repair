@@ -1,6 +1,9 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/OrbitControls.js';
-import { STLLoader } from 'three/addons/STLLoader.js';
+// Relative paths on purpose: bare specifiers would need an import map, and a
+// browser without import-map support fails to resolve them silently, leaving
+// the page looking alive but with nothing wired up.
+import * as THREE from './vendor/three.module.js';
+import { OrbitControls } from './vendor/OrbitControls.js';
+import { STLLoader } from './vendor/STLLoader.js';
 
 // Ordered worst-first so the most serious problem is always at the top, matching
 // the CLI. Keep in step with CHECK_ORDER in report.py.
@@ -361,3 +364,7 @@ addEventListener('resize', redraw);
 
 syncSize();
 tick();
+
+// Tells the boot watchdog in index.html that wiring completed. If anything
+// above throws, this never runs and the page says so rather than going quiet.
+window.__stlrepairReady = true;
