@@ -78,7 +78,22 @@
         <button type="button" id="clearqueue" class="link">Clear</button>
       </div>
       <ol id="queue" class="queue"></ol>
-      <a id="bundle" class="primary as-link" hidden>Download all repaired</a>
+      <a id="bundle" class="primary as-link" hidden>Download all + report</a>
+      <div id="reportlinks" class="reportlinks" hidden>
+        <span>Per-file report:</span>
+        <a id="reportcsv" download>CSV</a>
+        <a id="reportjson" download>JSON</a>
+        <button type="button" id="showtable" class="link">view</button>
+      </div>
+    </div>
+
+    <!-- Every check for every file, for bulk jobs. -->
+    <div id="batchbox" class="batchbox" hidden>
+      <div class="queuehead">
+        <span>Checks per file</span>
+        <button type="button" id="hidetable" class="link">close</button>
+      </div>
+      <div class="batchscroll"><table id="batchtable"></table></div>
     </div>
 
     <div id="report" class="report" hidden>

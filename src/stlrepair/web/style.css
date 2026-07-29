@@ -240,6 +240,43 @@ select {
 .queue li.active .qmark { color: var(--accent); }
 .queue a { color: var(--accent); }
 
+.reportlinks {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.reportlinks[hidden] { display: none; }
+.reportlinks a { color: var(--accent); }
+
+.batchbox { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.batchbox[hidden] { display: none; }
+.batchscroll { overflow: auto; max-height: 320px; }
+#batchtable {
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#batchtable th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: right;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+#batchtable th:first-child, #batchtable td:first-child { text-align: left; }
+#batchtable td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); }
+#batchtable td.zero { color: var(--muted); opacity: .5; }
+#batchtable td.bad { color: var(--bad); }
+#batchtable td.note { color: var(--warn); }
+#batchtable td.fixed { color: var(--ok); }
+
 /* Spinner on the file currently being worked on. */
 @keyframes spin { to { transform: rotate(360deg); } }
 .queue li.active .qmark {

@@ -11,6 +11,14 @@ from . import mesh as mesh_io
 from .diagnostics import diagnose
 from .report import Theme, human_size, render_check, render_repair
 from .repair import MODES, RepairOptions, repair
+from .summary import render_batch, to_csv, to_json
+
+
+def write_report(path: Path, reports: list[dict]) -> None:
+    """CSV unless the name says JSON; CSV is what spreadsheets want."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = to_json(reports) if path.suffix.lower() == ".json" else to_csv(reports)
+    path.write_text(body, encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-self-check",
         action="store_true",
         help="skip self-intersection detection (faster on dense meshes)",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="write a per-file report; .csv or .json chosen by the extension",
     )
     parser.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument(
@@ -209,6 +223,18 @@ def main(argv=None) -> int:
             print(f"failed: {source}: {exc}", file=sys.stderr)
             reports.append({"file": str(source), "error": str(exc)})
             failed += 1
+
+    # A batch needs a per-file view; one file already printed its own report.
+    if len(reports) > 1 and not args.quiet and not args.json:
+        print()
+        print(render_batch(reports, Theme.detect(
+            force_plain=args.plain, force_colour=args.color
+        )))
+
+    if args.report:
+        write_report(args.report, reports)
+        if not args.quiet and not args.json:
+            print(f"  report written to {friendly_path(args.report)}")
 
     if args.json:
         print(json.dumps(reports if len(reports) > 1 else reports[0], indent=2))

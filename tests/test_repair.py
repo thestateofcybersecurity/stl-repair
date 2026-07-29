@@ -5,6 +5,7 @@ Run with:  scripts/test
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -22,7 +23,8 @@ from stlrepair import mesh as mesh_io  # noqa: E402
 from stlrepair.diagnostics import diagnose  # noqa: E402
 from stlrepair.geometry import count_self_intersections  # noqa: E402
 from stlrepair.repair import RepairOptions, manifold_pass, repair  # noqa: E402
-from stlrepair.report import Theme, render_check, render_repair  # noqa: E402
+from stlrepair import summary  # noqa: E402
+from stlrepair.report import CHECK_ORDER, Theme, render_check, render_repair  # noqa: E402
 from stlrepair.topology import boundary_loops, shell_signed_volume  # noqa: E402
 from stlrepair.voxel import rasterise_surface, voxel_remesh  # noqa: E402
 
@@ -455,6 +457,76 @@ class TestReport(unittest.TestCase):
         self.assertNotIn("capped 1 holes", result.steps)
 
 
+class TestBatchSummary(unittest.TestCase):
+    """The per-file record a bulk job is reviewed from."""
+
+    PLAIN = Theme(colour=False, unicode_ok=False, width=78)
+
+    def entry(self, name, vertices, faces, **overrides):
+        result = repair(vertices, faces, RepairOptions(mode="auto"))
+        return {"file": name, "size_bytes": 1234, **result.to_dict(), **overrides}
+
+    def batch(self):
+        return [
+            self.entry("a.stl", *fixtures.cube_with_hole()),
+            self.entry("b.stl", *fixtures.cube_with_duplicate_face()),
+            self.entry("c.stl", *fixtures.good_cube()),
+            {"file": "d.stl", "error": "could not read STL"},
+        ]
+
+    def test_every_check_appears_for_every_file(self):
+        rows = [summary.row_for(e) for e in self.batch()]
+        self.assertEqual(len(rows), 4)
+        for field, _, _ in CHECK_ORDER:
+            for row in rows:
+                self.assertIn(f"{field}_before", row)
+                self.assertIn(f"{field}_after", row)
+
+    def test_outcomes_are_classified(self):
+        outcomes = [summary.outcome_of(e) for e in self.batch()]
+        self.assertEqual(outcomes, ["repaired", "repaired", "unchanged", "failed"])
+
+    def test_a_skipped_check_is_recorded_as_such(self):
+        """It must never appear as a zero, which would read as a pass."""
+        entry = self.entry("a.stl", *fixtures.cube_with_hole())
+        entry["after"]["self_intersections"] = None
+        row = summary.row_for(entry)
+        self.assertEqual(row["self_intersections_after"], "not checked")
+
+    def test_csv_has_a_header_and_one_row_per_file(self):
+        text = summary.to_csv(self.batch())
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(lines[0].startswith("file,tier,outcome"))
+        self.assertIn("naked_edges_before", lines[0])
+
+    def test_json_round_trips(self):
+        rows = json.loads(summary.to_json(self.batch()))
+        self.assertEqual([r["file"] for r in rows], ["a.stl", "b.stl", "c.stl", "d.stl"])
+
+    def test_failed_file_keeps_its_error(self):
+        rows = {r["file"]: r for r in json.loads(summary.to_json(self.batch()))}
+        self.assertEqual(rows["d.stl"]["error"], "could not read STL")
+        self.assertEqual(rows["d.stl"]["outcome"], "failed")
+
+    def test_totals_add_up_across_the_batch(self):
+        aggregate = summary.totals(self.batch())
+        self.assertEqual(aggregate["files"], 4)
+        self.assertEqual(aggregate["outcomes"]["repaired"], 2)
+        self.assertEqual(aggregate["outcomes"]["failed"], 1)
+        # a.stl contributed 3 naked edges, all resolved.
+        self.assertEqual(aggregate["checks"]["Naked edges"], (3, 0))
+
+    def test_rendered_batch_lists_each_file_and_the_rollup(self):
+        text = summary.render_batch(self.batch(), self.PLAIN)
+        for name in ("a.stl", "b.stl", "c.stl", "d.stl"):
+            self.assertIn(name, text)
+        self.assertIn("PROBLEMS ACROSS THE BATCH", text)
+        self.assertIn("4 files", text)
+        for line in text.splitlines():
+            self.assertLessEqual(len(line), 78, f"overflows: {line!r}")
+
+
 class TestCLI(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run(
@@ -519,9 +591,39 @@ class TestCLI(unittest.TestCase):
             written = sorted(p.name for p in out.glob("*.stl"))
         self.assertEqual(written, ["a_repaired.stl", "b_repaired.stl"])
 
-    def test_json_output_is_machine_readable(self):
-        import json
+    def test_batch_writes_a_per_file_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "in"
+            folder.mkdir()
+            mesh_io.save_stl(folder / "a.stl", *fixtures.cube_with_hole())
+            mesh_io.save_stl(folder / "b.stl", *fixtures.cube_with_duplicate_face())
 
+            csv_path = Path(tmp) / "report.csv"
+            result = self.run_cli(
+                str(folder), "-o", str(Path(tmp) / "out"), "--report", str(csv_path)
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("BATCH SUMMARY", result.stdout)
+
+            body = csv_path.read_text()
+        lines = [ln for ln in body.splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 3)                    # header plus two files
+        self.assertIn("naked_edges_before", lines[0])
+
+    def test_report_can_be_written_as_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "a.stl"
+            mesh_io.save_stl(source, *fixtures.cube_with_hole())
+            path = Path(tmp) / "nested" / "report.json"
+            result = self.run_cli(str(source), "-o", str(Path(tmp) / "o.stl"),
+                                  "--report", str(path))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = json.loads(path.read_text())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["naked_edges_before"], 3)
+        self.assertEqual(rows[0]["naked_edges_after"], 0)
+
+    def test_json_output_is_machine_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "broken.stl"
             mesh_io.save_stl(path, *fixtures.cube_with_hole())

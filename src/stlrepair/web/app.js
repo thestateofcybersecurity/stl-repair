@@ -464,9 +464,72 @@ function summarise() {
   const tokens = queue
     .filter((item) => item.data)
     .map((item) => item.data.download.split('/').pop());
+
   const bundle = $('bundle');
   bundle.hidden = tokens.length < 2;
   bundle.href = `/api/bundle?tokens=${tokens.join(',')}`;
+
+  // The report is worth having for a single file too, not just a batch.
+  const links = $('reportlinks');
+  links.hidden = tokens.length === 0;
+  $('reportcsv').href = `/api/report?tokens=${tokens.join(',')}`;
+  $('reportjson').href = `/api/report?format=json&tokens=${tokens.join(',')}`;
+
+  if (!$('batchbox').hidden) renderBatchTable();
+}
+
+/* Every check for every processed file. The queue answers "did it work"; this
+   answers "what was actually wrong with each one", which is what a bulk job
+   needs to review afterwards. */
+function renderBatchTable() {
+  const done = queue.filter((item) => item.data);
+  const table = $('batchtable');
+  table.replaceChildren();
+  if (!done.length) return;
+
+  const head = document.createElement('tr');
+  for (const label of ['file', 'tier', 'triangles', ...CHECKS.map(([, l]) => l)]) {
+    const th = document.createElement('th');
+    th.textContent = label;
+    head.append(th);
+  }
+  table.append(head);
+
+  for (const item of done) {
+    const tr = document.createElement('tr');
+    const data = item.data;
+
+    const name = document.createElement('td');
+    name.textContent = item.name;
+    const tier = document.createElement('td');
+    tier.textContent = data.tier;
+    const tris = document.createElement('td');
+    tris.textContent = `${data.before.triangle_count.toLocaleString()} → ` +
+      `${data.after.triangle_count.toLocaleString()}`;
+    tr.append(name, tier, tris);
+
+    for (const [field] of CHECKS) {
+      const td = document.createElement('td');
+      const was = data.before[field];
+      const now = data.after[field];
+
+      if (was === null || now === null) {
+        td.textContent = 'n/c';           // the check could not be run
+        td.className = 'note';
+      } else if (!was && !now) {
+        td.textContent = '0';
+        td.className = 'zero';
+      } else if (!now) {
+        td.textContent = `${was} → 0`;
+        td.className = 'fixed';
+      } else {
+        td.textContent = `${was} → ${now}`;
+        td.className = INFORMATIONAL.has(field) ? 'note' : 'bad';
+      }
+      tr.append(td);
+    }
+    table.append(tr);
+  }
 }
 
 function renderQueue() {
@@ -546,12 +609,20 @@ $('stop').addEventListener('click', () => {
   setStatus('Stopping after the current file…');
 });
 
+$('showtable').addEventListener('click', () => {
+  $('batchbox').hidden = false;
+  renderBatchTable();
+});
+$('hidetable').addEventListener('click', () => { $('batchbox').hidden = true; });
+
 $('clearqueue').addEventListener('click', () => {
   if (running) return;
   queue = [];
   clearPreview();
   $('report').hidden = true;
   $('bundle').hidden = true;
+  $('reportlinks').hidden = true;
+  $('batchbox').hidden = true;
   setStatus('');
   renderQueue();
   updateRunButton();

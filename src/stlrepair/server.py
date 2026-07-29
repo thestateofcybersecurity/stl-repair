@@ -20,6 +20,7 @@ from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from . import mesh as mesh_io
 from . import topology
 from .repair import RepairOptions, repair
+from .summary import to_csv, to_json
 
 WEB_ROOT = Path(__file__).parent / "web"
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -46,13 +47,20 @@ def _cleanup_spool():
     shutil.rmtree(_SPOOL, ignore_errors=True)
 
 
-def _remember(name: str, payload: bytes) -> str:
+def _remember(name: str, payload: bytes, report: dict | None = None) -> str:
     token = uuid.uuid4().hex
     path = _SPOOL / f"{token}.stl"
     path.write_bytes(payload)
 
     with _store_lock:
-        _results[token] = {"name": name, "path": path, "size": len(payload)}
+        _results[token] = {
+            "name": name,
+            "path": path,
+            "size": len(payload),
+            # Kept so a batch report can be assembled server-side, using the
+            # same code the CLI uses.
+            "report": report or {},
+        }
         total = sum(entry["size"] for entry in _results.values())
         while _results and (
             len(_results) > MAX_RESULT_FILES or total > MAX_RESULT_BYTES
@@ -157,14 +165,19 @@ def create_app() -> Flask:
         welded_v, welded_f = mesh_io.weld(vertices, faces, options.weld_tol)
         stem = Path(upload.filename).stem or "model"
         payload = mesh_io.export_bytes(result.vertices, result.faces, ascii_out)
-        token = _remember(f"{stem}_repaired.stl", payload)
+
+        report = {
+            **result.to_dict(),
+            "file": upload.filename,
+            "size_bytes": len(raw),
+        }
+        token = _remember(f"{stem}_repaired.stl", payload, report)
 
         return jsonify(
             {
-                **result.to_dict(),
+                **report,
                 "filename": upload.filename,
                 "download": f"/api/download/{token}",
-                "size_bytes": len(payload),
                 "naked_edges_b64": _naked_edge_segments(welded_v, welded_f),
             }
         )
@@ -182,6 +195,30 @@ def create_app() -> Flask:
             download_name=entry["name"],
         )
 
+    def _lookup(tokens):
+        with _store_lock:
+            found = [_results.get(t) for t in tokens]
+        return [e for e in found if e and e["path"].is_file()]
+
+    @app.get("/api/report")
+    def api_report():
+        """The per-file report for a batch, as CSV or JSON."""
+        tokens = [t for t in request.args.get("tokens", "").split(",") if t]
+        entries = _lookup(tokens)
+        if not entries:
+            return jsonify({"error": "no results to report on"}), 404
+
+        reports = [e["report"] for e in entries if e["report"]]
+        as_json = request.args.get("format") == "json"
+        body = to_json(reports) if as_json else to_csv(reports)
+
+        return send_file(
+            io.BytesIO(body.encode("utf-8")),
+            mimetype="application/json" if as_json else "text/csv",
+            as_attachment=True,
+            download_name=f"stl_repair_report.{'json' if as_json else 'csv'}",
+        )
+
     @app.get("/api/bundle")
     def api_bundle():
         """Zip several results together, so a batch is one download."""
@@ -189,9 +226,7 @@ def create_app() -> Flask:
         if not tokens:
             return jsonify({"error": "no tokens given"}), 400
 
-        with _store_lock:
-            entries = [_results.get(t) for t in tokens]
-        entries = [e for e in entries if e and e["path"].is_file()]
+        entries = _lookup(tokens)
         if not entries:
             return jsonify({"error": "nothing left to bundle"}), 404
 
@@ -211,6 +246,13 @@ def create_app() -> Flask:
                     counter += 1
                 used.add(name)
                 bundle.write(entry["path"], arcname=name)
+
+            # The report travels with the meshes, so a bulk job is one download
+            # and the record of what was checked is not left behind.
+            reports = [e["report"] for e in entries if e["report"]]
+            if reports:
+                bundle.writestr("report.csv", to_csv(reports))
+                bundle.writestr("report.json", to_json(reports))
         archive.close()
 
         response = send_file(

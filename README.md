@@ -98,7 +98,14 @@ unplugged.
 **Batches.** Drop as many files as you like. They queue and are repaired **one at
 a time**, never in parallel, because each repair is CPU and memory hungry and
 running several together only slows the machine down. The queue shows per-file
-progress and a download link each, plus a single *Download all* zip at the end.
+progress and a download link each, plus a single *Download all + report* zip at
+the end.
+
+**Per-file report.** For bulk work you need to know what was wrong with each
+file, not just that the batch finished. *View* opens a table of every check for
+every file, before and after, and the report downloads as CSV or JSON. The zip
+carries `report.csv` and `report.json` alongside the meshes, so the record does
+not get separated from the models.
 
 *Stop after this file* halts the run at the next boundary rather than killing it
 mid-repair; the remaining files stay in the queue and the button becomes
@@ -136,12 +143,51 @@ Writes `model_repaired.stl` beside the input.
 # whole folder into an output directory
 ./scripts/stl-repair ~/printer-files -o ./repaired
 
+# a batch with a per-file report; .json also works
+./scripts/stl-repair ~/printer-files -o ./repaired --report report.csv
+
 # machine-readable, for scripting
 ./scripts/stl-repair model.stl --check-only --json
 ```
 
 Colour switches itself off when piped and honours `NO_COLOR`. `--plain` gives
 ASCII output for logs, `--color` forces colour back on.
+
+### Batch reporting
+
+More than one file prints a summary afterwards: a line per file with its tier,
+triangle counts and outcome, then every problem found across the batch rolled up.
+
+```
+━━━ BATCH SUMMARY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  file          tier                   triangles    time  result
+  ─────────────────────────────────────────────────────────────────────────
+  Ball.stl      conservative     28,872 → 28,818    1.7s  repaired
+  Orb.stl       voxel           19,176 → 311,772   20.4s  repaired
+  Wedge.stl     conservative     19,562 → 19,510    1.6s  repaired
+  Zap.stl       conservative     14,532 → 14,512    1.0s  repaired
+  ─────────────────────────────────────────────────────────────────────────
+  4 files · 4 repaired · 24.6s total
+
+  PROBLEMS ACROSS THE BATCH                                     before → after
+    ✓ Non-manifold edges                                         176 →       0
+    ✓ Self-intersections                                           3 →       0
+    ✓ Degenerate faces                                           176 →       0
+    ✓ Duplicate faces                                              1 →       0
+    ● Disjoint shells                                              1 →       1
+
+    • not checked on some files: self-intersections
+```
+
+`--report` writes one row per file with all nine checks before and after, the
+tier used, timing, vertex and triangle counts, volume, bodies, and the steps
+taken. Two details matter for auditing a bulk run: a check that could not be run
+is recorded as `not checked` rather than `0`, so it can never be mistaken for a
+pass, and a file that failed outright keeps its error message in its row rather
+than vanishing from the report.
+
+Outcomes are one of `repaired` (was broken, now clean), `unchanged` (was already
+clean), `incomplete` (improved but problems remain) or `failed`.
 
 ### Options
 
