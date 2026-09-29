@@ -40,6 +40,8 @@ def detect_format(source) -> str:
     """
     try:
         if isinstance(source, (str, Path)):
+            if ".." in str(source):
+                raise Exception("Invalid file path")
             with open(source, "rb") as handle:
                 head = handle.read(84)
                 size = Path(source).stat().st_size
@@ -66,6 +68,8 @@ def save_stl(path, vertices: np.ndarray, faces: np.ndarray, ascii_mode: bool = F
         trimesh.exchange.stl.export_stl(mesh)
     )
     mode = "w" if ascii_mode else "wb"
+    if ".." in str(path):
+        raise Exception("Invalid file path")
     with open(path, mode) as handle:
         handle.write(data)
 
