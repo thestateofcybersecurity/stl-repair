@@ -295,6 +295,26 @@ function setStatus(message, isError = false) {
    parsing geometry twice per file just to redraw it a moment later. */
 const PREVIEW_LIMIT = 5;
 
+function buildValidatedDownloadUrl(downloadPath) {
+  try {
+    // Minimal path validation
+    if (downloadPath.includes('/../') || /\/%2e%2e\//i.test(downloadPath)) {
+      throw new Error('Invalid path');
+    }
+    
+    const url = new URL(downloadPath, window.location.origin);
+    
+    // Ensure same origin
+    if (url.origin !== window.location.origin) {
+      throw new Error('Invalid host');
+    }
+    
+    return url.href;
+  } catch {
+    throw new Error('Invalid URL');
+  }
+}
+
 async function showPreview(item) {
   if (!viewerReady || !item.data) return;
   const data = item.data;
@@ -303,7 +323,7 @@ async function showPreview(item) {
   setGeometry(views[0], loader.parse(original));
   setNakedEdges(views[0], data.naked_edges_b64);
 
-  const repaired = await (await fetch(data.download)).arrayBuffer();
+  const repaired = await (await fetch(buildValidatedDownloadUrl(data.download))).arrayBuffer();
   setGeometry(views[1], loader.parse(repaired));
 
   $('tag-before').textContent = `${data.before.triangle_count.toLocaleString()} tris`;
